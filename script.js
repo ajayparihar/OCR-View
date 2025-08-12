@@ -1,6 +1,7 @@
 // script.js - Full merged, readable, commented JavaScript
 // - Unified pipeline for camera/gallery/PC
-// - Preprocess (resize, grayscale, contrast, sharpen) until under 1MB
+// - Balanced preprocessing (resize, grayscale, contrast, sharpen) until under 1MB
+// - Smart compression: quality vs size vs OCR accuracy optimization
 // - Preview processed image, toggle Original <-> Processed
 // - OCR via OCR.Space (preferred) with Tesseract.js fallback
 // - Runs OCR on both Processed and Original and merges results for higher recall
@@ -26,8 +27,9 @@ const galleryBtn = document.getElementById('galleryBtn');
 // ---------- Configuration ----------
 const API_KEY = 'K88494594188957'; // OCR.Space key; if empty, fallback to Tesseract only
 const MAX_FILE_SIZE = 1024 * 1024; // 1 MB
-const MAX_DIMENSION = 1600;        // starting cap for longest side (balanced)
-const MIN_DIMENSION = 500;         // lower bound to avoid extreme downscaling
+const MAX_DIMENSION = 1400;        // More balanced starting cap for longest side
+const MIN_DIMENSION = 600;         // Higher lower bound for better OCR accuracy
+const LIGHT_PREPROCESS_THRESHOLD = 300 * 1024; // Only preprocess files >300KB
 const ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
 
 // Karnataka plate strict pattern: KA##A#### or KA##AA####
@@ -174,60 +176,110 @@ async function preprocessForOCR(file) {
   const img = await loadImage(file);
   const origW = img.width, origH = img.height;
 
-  // initial scale to cap longest side at MAX_DIMENSION
+  // Calculate optimal starting dimensions - balance between quality and size
   let scale = Math.min(MAX_DIMENSION / origW, MAX_DIMENSION / origH, 1);
+  
+  // Ensure we don't go below MIN_DIMENSION for OCR accuracy
+  if (scale * Math.min(origW, origH) < MIN_DIMENSION) {
+    scale = MIN_DIMENSION / Math.min(origW, origH);
+  }
+  
   let targetW = Math.max(Math.round(origW * scale), 1);
   let targetH = Math.max(Math.round(origH * scale), 1);
 
-  // options to make text crisper for OCR
-  const opts = { grayscale: true, contrast: 1.3, sharpen: true };
+  // OCR-optimized processing options - balanced for clarity without over-processing
+  const opts = { grayscale: true, contrast: 1.25, sharpen: true };
 
-  // quality starts high; we will reduce as needed
-  let quality = 0.88;
+  // Start with high quality and reduce more gradually
+  let quality = 0.92;
   let blob = null;
+  let attempts = 0;
+  const maxAttempts = 8; // Reduced from 12 for better balance
 
-  for (let attempt = 0; attempt < 12; attempt++) {
+  // Track the best result so far
+  let bestBlob = null;
+  let bestScore = 0;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    attempts = attempt + 1;
     targetW = Math.max(Math.round(origW * scale), 1);
     targetH = Math.max(Math.round(origH * scale), 1);
 
     const canvas = renderToCanvas(img, targetW, targetH, opts);
     blob = await canvasToBlobPromise(canvas, 'image/jpeg', quality);
 
-    addLogEntry(`Preprocess attempt ${attempt + 1}: ${targetW}x${targetH}, q=${quality}, size=${Math.round(blob.size/1024)}KB`, 'info');
+    // Calculate a quality score (higher is better)
+    const sizeScore = Math.max(0, 1 - (blob.size / MAX_FILE_SIZE));
+    const dimensionScore = Math.min(1, (targetW * targetH) / (origW * origH));
+    const qualityScore = quality;
+    const overallScore = (sizeScore * 0.4) + (dimensionScore * 0.4) + (qualityScore * 0.2);
 
-    if (blob.size <= MAX_FILE_SIZE) break;
+    addLogEntry(`Attempt ${attempts}: ${targetW}x${targetH}, q=${quality.toFixed(2)}, size=${Math.round(blob.size/1024)}KB, score=${overallScore.toFixed(3)}`, 'info');
 
-    // reduce quality first (not below 0.5)
-    if (quality > 0.55) {
-      quality = Math.max(0.55, quality - 0.1);
-      continue;
+    // Keep track of the best result
+    if (overallScore > bestScore) {
+      bestScore = overallScore;
+      bestBlob = blob;
     }
 
-    // if quality can't shrink more, reduce scale
-    const newScale = scale * 0.9;
-    const newW = Math.round(origW * newScale), newH = Math.round(origH * newScale);
-    if (Math.min(newW, newH) < MIN_DIMENSION) {
-      // minimal dimension reached: try one last quality drop
-      if (quality > 0.45) {
-        quality = Math.max(0.45, quality - 0.1);
-        continue;
-      } else {
-        addLogEntry('Reached minimal quality/dimension; accepting processed image', 'warning');
-        break;
-      }
+    // If we're under the size limit, we can stop
+    if (blob.size <= MAX_FILE_SIZE) {
+      addLogEntry(`✓ Target size achieved: ${Math.round(blob.size/1024)}KB`, 'success');
+      break;
+    }
+
+    // Smart progression: balance quality vs dimension reduction
+    if (attempt < 3) {
+      // First 3 attempts: reduce quality gradually
+      quality = Math.max(0.75, quality - 0.05);
+    } else if (attempt < 5) {
+      // Next 2 attempts: reduce quality more aggressively
+      quality = Math.max(0.65, quality - 0.08);
     } else {
-      scale = newScale;
-      continue;
+      // Final attempts: reduce both quality and dimensions
+      quality = Math.max(0.55, quality - 0.1);
+      
+      // Only reduce dimensions if quality is already low
+      if (quality <= 0.65) {
+        const newScale = scale * 0.95; // More gradual scaling
+        const newW = Math.round(origW * newScale);
+        const newH = Math.round(origH * newScale);
+        
+        // Ensure we don't go below minimum dimensions
+        if (Math.min(newW, newH) >= MIN_DIMENSION) {
+          scale = newScale;
+        } else {
+          // If we can't scale down more, try one last quality drop
+          if (quality > 0.5) {
+            quality = Math.max(0.5, quality - 0.15);
+          } else {
+            addLogEntry('Reached minimum quality/dimension limits', 'warning');
+            break;
+          }
+        }
+      }
     }
   }
 
-  if (blob.size > MAX_FILE_SIZE) {
-    addLogEntry(`Warning: processed image still >1MB (${Math.round(blob.size/1024)}KB). OCR may reject it.`, 'warning');
+  // Use the best result we found, or the last one if none were under limit
+  const finalBlob = bestBlob || blob;
+  
+  // Calculate compression ratio and provide balanced feedback
+  const compressionRatio = (finalBlob.size / file.size) * 100;
+  const dimensionRatio = ((targetW * targetH) / (origW * origH)) * 100;
+  
+  if (finalBlob.size > MAX_FILE_SIZE) {
+    addLogEntry(`⚠ Warning: Best processed image still >1MB (${Math.round(finalBlob.size/1024)}KB). OCR may reject it.`, 'warning');
+    addLogEntry(`Best score achieved: ${bestScore.toFixed(3)}`, 'info');
   } else {
-    addLogEntry(`Processed image ready: ${Math.round(blob.size/1024)}KB`, 'success');
+    addLogEntry(`✓ Processed image ready: ${Math.round(finalBlob.size/1024)}KB`, 'success');
   }
+  
+  // Log compression balance information
+  addLogEntry(`Compression: ${compressionRatio.toFixed(1)}% of original size, ${dimensionRatio.toFixed(1)}% of original pixels`, 'info');
+  addLogEntry(`Final quality: ${quality.toFixed(2)}, dimensions: ${targetW}x${targetH}`, 'info');
 
-  return blob;
+  return finalBlob;
 }
 
 // ---------- OCR handling: OCR.Space preferred, Tesseract fallback ----------
@@ -557,19 +609,39 @@ async function handleFileInput(file) {
       setStatus('Preprocess failed — using original image', true);
     }
   } else {
-    // <=1MB: apply light preprocess for OCR accuracy if >200KB
-    if (file.size > 200 * 1024) {
-      addLogEntry('Applying light preprocessing for OCR', 'info');
+    // <=1MB: apply light preprocess for OCR accuracy if above threshold
+    if (file.size > LIGHT_PREPROCESS_THRESHOLD) {
+      addLogEntry('Applying light preprocessing for OCR accuracy', 'info');
       try {
-        const lightBlob = await preprocessForOCR(file);
-        if (lightBlob && lightBlob.size <= MAX_FILE_SIZE) {
+        // Use a more conservative preprocessing approach for smaller files
+        const img = await loadImage(file);
+        const origW = img.width, origH = img.height;
+        
+        // Only resize if significantly larger than optimal
+        let targetW = origW, targetH = origH;
+        if (Math.max(origW, origH) > 1200) {
+          const scale = 1200 / Math.max(origW, origH);
+          targetW = Math.round(origW * scale);
+          targetH = Math.round(origH * scale);
+        }
+        
+        // Light OCR optimization without aggressive compression
+        const opts = { grayscale: true, contrast: 1.15, sharpen: false };
+        const canvas = renderToCanvas(img, targetW, targetH, opts);
+        const lightBlob = await canvasToBlobPromise(canvas, 'image/jpeg', 0.85);
+        
+        if (lightBlob && lightBlob.size <= file.size * 0.9) { // Only use if significantly smaller
           currentFile = new File([lightBlob], `processed_${file.name.replace(/\s+/g,'_')}.jpg`, { type: 'image/jpeg' });
           setPreviewFromBlob(currentFile);
-          addLogEntry(`Light preprocess applied (${Math.round(currentFile.size/1024)}KB)`, 'success');
+          const compressionRatio = (lightBlob.size / file.size) * 100;
+          const dimensionRatio = ((targetW * targetH) / (origW * origH)) * 100;
+          addLogEntry(`Light preprocess applied: ${Math.round(origW)}x${origH} → ${targetW}x${targetH}`, 'success');
+          addLogEntry(`Size: ${Math.round(file.size/1024)}KB → ${Math.round(currentFile.size/1024)}KB (${compressionRatio.toFixed(1)}%)`, 'success');
+          addLogEntry(`Pixels: ${dimensionRatio.toFixed(1)}% of original, quality: 0.85`, 'info');
         } else {
           currentFile = file;
           setPreviewFromBlob(originalBlob);
-          addLogEntry('Light preprocess produced larger file — using original', 'info');
+          addLogEntry('Light preprocess not beneficial — using original', 'info');
         }
       } catch (err) {
         addLogEntry(`Light preprocess failed: ${err.message}`, 'warning');
