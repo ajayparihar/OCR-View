@@ -10,6 +10,7 @@ const logToggle = document.getElementById('logToggle');
 const logHeader = document.getElementById('logHeader');
 const extractBtn = document.getElementById('extractBtn');
 const clearBtn = document.getElementById('clearBtn');
+const copyBtn = document.getElementById('copyBtn');
 
 // Configuration
 const API_KEY = 'K88494594188957';
@@ -18,6 +19,9 @@ const ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
 
 // Karnataka vehicle number pattern: KA + 2 digits + 1 letter + 4 digits
 const KA_VEHICLE_PATTERN = /KA\d{2}[A-Z]\d{4}/g;
+
+// UPI ID pattern: Common formats including those starting with KA
+const UPI_ID_PATTERN = /[a-zA-Z0-9.]{2,256}@[a-zA-Z0-9]{2,64}|[a-zA-Z0-9]{6,15}|KA[0-9A-Z]{6,8}/g;
 
 // Global state
 let currentFile = null;
@@ -72,26 +76,86 @@ function processText(rawText) {
   
   // Step 4: Find KA vehicle number pattern
   addLogEntry('Step 4: Searching for Karnataka vehicle number pattern (KA##A####)', 'step');
-  const matches = step3.match(KA_VEHICLE_PATTERN);
+  const vehicleMatches = step3.match(KA_VEHICLE_PATTERN);
   
-  if (matches && matches.length > 0) {
-    const vehicleNumber = matches[0];
+  if (vehicleMatches && vehicleMatches.length > 0) {
+    const vehicleNumber = vehicleMatches[0];
     addLogEntry(`✓ Found vehicle number: ${vehicleNumber}`, 'success');
     
     return {
       processed: vehicleNumber,
       found: true,
-      allMatches: matches,
-      fullProcessed: step3
+      allMatches: vehicleMatches,
+      fullProcessed: step3,
+      type: 'vehicle'
     };
-  } else {
-    addLogEntry('✗ No Karnataka vehicle number pattern found', 'warning');
-    return {
-      processed: 'No KA vehicle number found',
-      found: false,
-      allMatches: [],
-      fullProcessed: step3
-    };
+  }
+  
+  // Step 5: Find UPI ID pattern if no vehicle number found
+  addLogEntry('Step 5: Searching for UPI ID pattern', 'step');
+  
+  // First check the original text for UPI IDs (with special characters)
+  let upiMatches = rawText.match(UPI_ID_PATTERN);
+  
+  // If not found, try the processed text
+  if (!upiMatches || upiMatches.length === 0) {
+    upiMatches = step3.match(UPI_ID_PATTERN);
+  }
+  
+  if (upiMatches && upiMatches.length > 0) {
+    // Filter out any matches that are too short or too long
+    const validUpiMatches = upiMatches.filter(match => match.length >= 6 && match.length <= 15);
+    
+    if (validUpiMatches.length > 0) {
+      const upiId = validUpiMatches[0];
+      addLogEntry(`✓ Found UPI ID: ${upiId}`, 'success');
+      
+      return {
+        processed: upiId,
+        found: true,
+        allMatches: validUpiMatches,
+        fullProcessed: step3,
+        type: 'upi'
+      };
+    }
+  }
+  
+  // No matches found
+  addLogEntry('✗ No Karnataka vehicle number or UPI ID pattern found', 'warning');
+  return {
+    processed: 'No valid identifier found',
+    found: false,
+    allMatches: [],
+    fullProcessed: step3,
+    type: 'none'
+  };
+}
+
+// Copy to clipboard function
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const isUpiId = processedOutput.classList.contains('upi-id');
+    const isVehicleNumber = processedOutput.classList.contains('vehicle-number');
+    
+    let itemType = 'Item';
+    if (isUpiId) {
+      itemType = 'UPI ID';
+    } else if (isVehicleNumber) {
+      itemType = 'Vehicle number';
+    }
+    
+    setStatus(`${itemType} copied to clipboard!`);
+    addLogEntry(`${itemType} copied to clipboard`, 'success');
+    setTimeout(() => {
+      setStatus('');
+    }, 2000);
+    return true;
+  } catch (err) {
+    console.error('Failed to copy text: ', err);
+    setStatus('Failed to copy to clipboard', true);
+    addLogEntry(`Copy error: ${err}`, 'error');
+    return false;
   }
 }
 
@@ -105,6 +169,9 @@ function clearAll() {
   preview.innerHTML = '<div class="preview-placeholder">No image selected</div>';
   clearLog();
   setStatus('');
+  
+  // Hide copy button when cleared
+  copyBtn.style.display = 'none';
 }
 
 function showPreview(file) {
@@ -255,6 +322,36 @@ async function extractText() {
     // Display processed result
     processedOutput.textContent = processResult.processed;
     processedOutput.className = `output processed-output ${processResult.found ? 'found' : 'not-found'}`;
+    
+    // Add specific class for UPI IDs
+    if (processResult.type === 'upi') {
+      processedOutput.classList.add('upi-id');
+    } else if (processResult.type === 'vehicle') {
+      processedOutput.classList.add('vehicle-number');
+    }
+    
+    // Adjust font size for mobile based on content length and type
+    if (window.innerWidth <= 768) {
+      if (processResult.processed.length > 8) {
+        // Longer results need smaller font
+        processedOutput.style.fontSize = '0.8rem';
+        processedOutput.style.letterSpacing = '0';
+        processedOutput.style.padding = '15px 5px';
+      } else {
+        // Standard mobile size for shorter results
+        processedOutput.style.fontSize = '0.9rem';
+        processedOutput.style.letterSpacing = '0.02em';
+        processedOutput.style.padding = '20px 8px';
+      }
+    } else {
+      // Reset styles for desktop
+      processedOutput.style.fontSize = '';
+      processedOutput.style.letterSpacing = '';
+      processedOutput.style.padding = '';
+    }
+    
+    // Show copy button if we found a valid identifier
+    copyBtn.style.display = processResult.found ? 'flex' : 'none';
 
     // Update status
     if (processResult.found) {
@@ -338,6 +435,14 @@ function setupEventListeners() {
     e.stopPropagation();
     // Open gallery when dropzone is clicked
     fileInput.click();
+  });
+  
+  // Copy button click event
+  copyBtn.addEventListener('click', function() {
+    const textToCopy = processedOutput.textContent;
+    if (textToCopy && textToCopy !== 'Waiting for text extraction...' && textToCopy !== 'No KA vehicle number found') {
+      copyToClipboard(textToCopy);
+    }
   });
 
   // Drag and drop handlers
