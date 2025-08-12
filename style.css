@@ -16,6 +16,11 @@
   box-sizing: border-box; 
 }
 
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -79,6 +84,13 @@ body {
 @media (min-width: 900px) {
   .grid {
     grid-template-columns: 1fr 1.2fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr;
+    min-height: auto;
   }
 }
 
@@ -189,7 +201,7 @@ body {
 }
 
 .mobile-options {
-  display: none; /* Hidden by default, shown on mobile */
+  display: none;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   margin: 16px 0;
@@ -222,7 +234,6 @@ body {
   color: var(--text);
 }
 
-/* Show mobile options on small screens */
 @media (max-width: 768px) {
   .mobile-options {
     display: grid;
@@ -247,28 +258,23 @@ body {
     display: none;
   }
   
-  /* Hide the dropzone on mobile screens as requested */
   .file-input-container {
     display: none;
   }
   
-  /* Adjust panel padding for mobile */
   .panel {
     padding: 24px 20px;
   }
   
-  /* Make buttons more touch-friendly */
   .btn {
     padding: 16px 24px;
     font-size: 1rem;
   }
   
-  /* Improve preview area on mobile */
   .preview {
     min-height: 220px;
   }
   
-  /* Improve processed output display on mobile */
   .processed-output {
     font-size: 0.9rem;
     letter-spacing: 0.02em;
@@ -281,16 +287,16 @@ body {
     justify-content: center;
     margin: 0;
     border-radius: 10px;
+    word-break: break-word;
+    overflow-wrap: anywhere;
   }
   
-  /* Specific styling for UPI IDs on mobile */
   .processed-output.upi-id {
     font-size: 0.9rem;
     letter-spacing: 0.02em;
     font-family: 'Courier New', monospace;
   }
   
-  /* Adjust output container for mobile */
   .processed-container {
     width: 100%;
     overflow: visible;
@@ -300,7 +306,6 @@ body {
     padding-bottom: 10px;
   }
   
-  /* Ensure copy button is properly positioned on mobile */
   .copy-btn {
     top: 6px;
     right: 6px;
@@ -308,27 +313,25 @@ body {
     height: 28px;
   }
   
-  /* Adjust output section spacing */
   .output-section {
     margin-bottom: 16px;
   }
   
-  /* Make section titles more compact */
   .section-title {
     margin-bottom: 8px;
     font-size: 0.95rem;
   }
   
-  /* Ensure the output panel has proper spacing */
   .output-panel {
     padding-bottom: 10px;
   }
   
-  /* Adjust the raw text output for mobile */
   #output {
     font-size: 0.8rem;
     padding: 12px;
     min-height: 100px;
+    max-height: 250px;
+    overflow-y: auto;
   }
 }
 
@@ -346,7 +349,7 @@ body {
 
 .preview img {
   max-width: 100%;
-  max-height: 200px;
+  height: auto;
   object-fit: contain;
   border-radius: 8px;
 }
@@ -402,12 +405,15 @@ body {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   color: var(--text);
   resize: none;
   outline: none;
   max-width: 100%;
   overflow-x: auto;
   box-sizing: border-box;
+  max-height: 250px;
+  overflow-y: auto;
 }
 
 .processed-container {
@@ -427,7 +433,7 @@ body {
   border-radius: 6px;
   width: 32px;
   height: 32px;
-  display: none; /* Hidden by default, shown when there's content to copy */
+  display: none;
   align-items: center;
   justify-content: center;
   cursor: pointer;
@@ -489,15 +495,13 @@ body {
   border-color: rgba(251, 191, 36, 0.3);
 }
 
-/* Specific styling for UPI IDs */
 .processed-output.upi-id {
-  letter-spacing: 0.05em; /* Less spacing for UPI IDs */
-  font-family: 'Courier New', monospace; /* Monospace font for better readability */
+  letter-spacing: 0.05em;
+  font-family: 'Courier New', monospace;
 }
 
-/* Specific styling for vehicle numbers */
 .processed-output.vehicle-number {
-  letter-spacing: 0.12em; /* More spacing for vehicle numbers */
+  letter-spacing: 0.12em;
 }
 
 @media (max-width: 480px) {
@@ -536,11 +540,11 @@ body {
   font-size: 1rem;
   cursor: pointer;
   transition: transform 0.2s ease;
-  transform: rotate(-90deg); /* Closed by default */
+  transform: rotate(-90deg);
 }
 
 .log-toggle.expanded {
-  transform: rotate(0deg); /* Expanded state */
+  transform: rotate(0deg);
 }
 
 .processing-log {
@@ -548,6 +552,8 @@ body {
   max-height: 0;
   overflow: hidden;
   transition: max-height 0.3s ease, padding 0.3s ease;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .processing-log.expanded {
@@ -609,7 +615,6 @@ body {
   font-weight: bold;
 }
 
-/* App Footer */
 .app-footer {
   margin-top: 24px;
   text-align: center;
