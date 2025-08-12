@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OCR View - Text Scanner</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>OCR View</h1>
+      <p>Extract text from images using OCR</p>
+    </div>
+
+    <div class="main-card">
+      <div class="grid">
+        <!-- Input Panel -->
+        <div class="panel">
+          <h2 class="panel-title">Select Image</h2>
+          
+          <div class="file-input-container">
+            <input
+              id="fileInput"
+              type="file"
+              accept="image/*"
+              capture="environment"
+              class="file-input"
+            />
+            <div id="dropzone" class="dropzone">
+              <div class="dropzone-text">Click here to select an image</div>
+              <div class="dropzone-subtext">or drag and drop an image file</div>
+            </div>
+          </div>
+          
+          <div class="hint">
+            Supports JPG, PNG, GIF • Max 1MB • OCR text extraction
+          </div>
+
+          <div class="buttons">
+            <button id="extractBtn" class="btn btn-primary">Extract Text</button>
+            <button id="clearBtn" class="btn btn-secondary">Clear</button>
+          </div>
+
+          <div id="status" class="status"></div>
+          
+          <div id="preview" class="preview">
+            <div class="preview-placeholder">No image selected</div>
+          </div>
+        </div>
+
+        <!-- Output Panel -->
+        <div class="panel output-panel">
+          <h2 class="panel-title">Results</h2>
+
+          <!-- Raw OCR Output -->
+          <div class="output-section">
+            <h3 class="section-title">Raw Text (OCR)</h3>
+            <div id="output" class="output">Select an image to extract text...</div>
+          </div>
+
+          <!-- Processed Output -->
+          <div class="output-section">
+            <h3 class="section-title">Processed Data</h3>
+            <div id="processedOutput" class="output processed-output">Waiting for text extraction...</div>
+          </div>
+
+          <!-- Processing Log -->
+          <div class="log-section">
+            <div class="log-header" id="logHeader">
+              <h3 class="section-title">Processing Log</h3>
+              <button class="log-toggle" id="logToggle">▶</button>
+            </div>
+            <div id="processingLog" class="processing-log">
+              <div class="log-entry">Ready to process text...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- App Footer -->
+    <div class="app-footer">
+      <p class="app-info">
+        <strong>OCR View</strong> v0.1 - Advanced OCR Text Scanner
+      </p>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
