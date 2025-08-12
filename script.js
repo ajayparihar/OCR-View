@@ -1,4 +1,13 @@
-// ---------- Configuration & DOM ----------
+// --------------------------- script.js ---------------------------
+// OCR View - Full client-side script
+// - Preprocesses images (resize, grayscale, contrast, sharpen)
+// - Iteratively compresses to meet 1MB OCR limit
+// - Shows processed preview and allows Original <-> Processed toggle
+// - Sends to OCR.Space (if API_KEY present) or falls back to Tesseract.js
+// - Extracts KA vehicle numbers robustly (split parts, OCR confusions)
+// -----------------------------------------------------------------
+
+// ---------- DOM references ----------
 const fileInput = document.getElementById('fileInput');
 const dropzone = document.getElementById('dropzone');
 const preview = document.getElementById('preview');
@@ -14,27 +23,28 @@ const copyBtn = document.getElementById('copyBtn');
 const cameraBtn = document.getElementById('cameraBtn');
 const galleryBtn = document.getElementById('galleryBtn');
 
-const API_KEY = 'K88494594188957';
-const MAX_FILE_SIZE = 1024 * 1024; // 1MB
+// ---------- Configuration ----------
+const API_KEY = 'K88494594188957'; // If empty, fallback to Tesseract.js
+const MAX_FILE_SIZE = 1024 * 1024; // 1 MB
 const MAX_DIMENSION = 1400;        // starting cap for longest side (balanced)
-const MIN_DIMENSION = 600;         // try not to go below this
+const MIN_DIMENSION = 600;         // don't downscale below this if avoidable
 const ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
 
-// Karnataka plate strict pattern (final form)
+// Karnataka plate strict pattern: KA##A#### or KA##AA####
 const KA_VEHICLE_PATTERN = /^KA\d{2}[A-Z]{1,2}\d{4}$/;
 
-// Global state
-let currentFile = null;        // Blob/File used for OCR
-let originalBlob = null;       // Original image blob for toggle
-let lastPreviewURL = null;     // to revoke object URLs
-let autoRunOCR = true;        // automatically run OCR after preprocessing
+// ---------- Global state ----------
+let currentFile = null;     // Blob/File used for OCR
+let originalBlob = null;    // Keep original for preview toggle
+let lastPreviewURL = null;  // to revoke object URLs
+let previewToggleBtn = null;
+let usingTesseract = false; // filled after dynamic load if needed
 
-// ---------- Small utilities & logging ----------
+// ---------- Utility & Logging ----------
 function setStatus(message, isError = false) {
   status.textContent = message;
   status.classList.toggle('error', isError);
 }
-
 function addLogEntry(message, type = 'info') {
   const entry = document.createElement('div');
   entry.className = `log-entry ${type}`;
@@ -42,37 +52,27 @@ function addLogEntry(message, type = 'info') {
   processingLog.appendChild(entry);
   processingLog.scrollTop = processingLog.scrollHeight;
 }
-
 function clearLog() {
   processingLog.innerHTML = '<div class="log-entry">Ready to process text...</div>';
   processingLog.classList.remove('expanded');
   logToggle.classList.remove('expanded');
 }
-
 function isValidImageFile(file) {
   return file && ALLOWED_TYPES.some(t => file.type === t || file.type.startsWith('image/'));
 }
-
 function isFileSizeValid(file) {
   return file.size <= MAX_FILE_SIZE;
 }
-
 function revokePreview() {
   if (lastPreviewURL) {
     URL.revokeObjectURL(lastPreviewURL);
     lastPreviewURL = null;
   }
 }
-
-/**
- * setPreviewFromBlob(blob, label)
- * - shows the blob in your #preview area. If #preview is <img> it sets src, else it injects an <img>.
- */
 function setPreviewFromBlob(blob) {
   revokePreview();
   const url = URL.createObjectURL(blob);
   lastPreviewURL = url;
-
   if (preview.tagName && preview.tagName.toLowerCase() === 'img') {
     preview.src = url;
   } else {
@@ -88,7 +88,7 @@ function setPreviewFromBlob(blob) {
   }
 }
 
-// ---------- Image load / render helpers ----------
+// ---------- Image helpers ----------
 function loadImage(fileOrBlob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -104,25 +104,23 @@ function loadImage(fileOrBlob) {
 }
 
 function renderToCanvas(img, w, h, opts = {}) {
+  // opts = { grayscale: bool, contrast: number (1.0 default), sharpen: bool, forcePixelContrast: bool }
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
 
-  // Use ctx.filter if available (faster). We'll still support pixel ops for sharpen.
   const filters = [];
   if (opts.grayscale) filters.push('grayscale(100%)');
-  if (opts.contrast) filters.push(`contrast(${Math.round(opts.contrast * 100)}%)`);
+  if (opts.contrast && Math.abs(opts.contrast - 1) > 0.01) filters.push(`contrast(${Math.round(opts.contrast * 100)}%)`);
   ctx.filter = filters.length ? filters.join(' ') : 'none';
-
   ctx.drawImage(img, 0, 0, w, h);
 
-  // If sharpen or precise contrast needed (or ctx.filter not supported), fall back to pixel ops
+  // Pixel fallback for sharpen or if we need to manually change contrast
   if (opts.sharpen || opts.forcePixelContrast) {
     let imageData = ctx.getImageData(0, 0, w, h);
     const data = imageData.data;
 
-    // Manual contrast if requested and filter not used
     if (opts.forcePixelContrast && opts.contrast) {
       for (let i = 0; i < data.length; i += 4) {
         for (let ch = 0; ch < 3; ch++) {
@@ -133,25 +131,25 @@ function renderToCanvas(img, w, h, opts = {}) {
       }
     }
 
-    // Sharpen (light kernel)
     if (opts.sharpen) {
       const copy = new Uint8ClampedArray(data);
       const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
-      for (let y = 1; y < h - 1; y++) {
-        for (let x = 1; x < w - 1; x++) {
+      const width = w, height = h;
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
           for (let ch = 0; ch < 3; ch++) {
-            let sum = 0, idxk = 0;
+            let sum = 0;
+            let idxk = 0;
             for (let ky = -1; ky <= 1; ky++) {
               for (let kx = -1; kx <= 1; kx++) {
-                const px = ((y + ky) * w + (x + kx)) * 4 + ch;
+                const px = ((y + ky) * width + (x + kx)) * 4 + ch;
                 sum += copy[px] * kernel[idxk++];
               }
             }
-            const out = (y * w + x) * 4 + ch;
+            const out = (y * width + x) * 4 + ch;
             data[out] = Math.min(255, Math.max(0, sum));
           }
-          // alpha preserve
-          data[(y * w + x) * 4 + 3] = copy[(y * w + x) * 4 + 3];
+          data[(y * width + x) * 4 + 3] = copy[(y * width + x) * 4 + 3];
         }
       }
     }
@@ -159,7 +157,6 @@ function renderToCanvas(img, w, h, opts = {}) {
     ctx.putImageData(imageData, 0, 0);
   }
 
-  // reset filter
   ctx.filter = 'none';
   return canvas;
 }
@@ -168,25 +165,22 @@ function canvasToBlobPromise(canvas, mime = 'image/jpeg', quality = 0.8) {
   return new Promise(resolve => canvas.toBlob(b => resolve(b), mime, quality));
 }
 
-// ---------- Preprocessing pipeline (balanced iterative approach) ----------
+// ---------- Preprocess pipeline ----------
 async function preprocessForOCR(file) {
   addLogEntry('Preprocessing image for OCR...', 'step');
-
   const img = await loadImage(file);
   const origW = img.width, origH = img.height;
 
-  // initial scale to MAX_DIMENSION
   let scale = Math.min(MAX_DIMENSION / origW, MAX_DIMENSION / origH, 1);
   let targetW = Math.max(Math.round(origW * scale), 1);
   let targetH = Math.max(Math.round(origH * scale), 1);
 
-  // rendering options
   const opts = { grayscale: true, contrast: 1.25, sharpen: true };
 
-  // start quality fairly high; iterative reduce
   let quality = 0.85;
   let blob = null;
 
+  // iterative attempts
   for (let attempt = 0; attempt < 10; attempt++) {
     targetW = Math.max(Math.round(origW * scale), 1);
     targetH = Math.max(Math.round(origH * scale), 1);
@@ -198,18 +192,14 @@ async function preprocessForOCR(file) {
 
     if (blob.size <= MAX_FILE_SIZE) break;
 
-    // reduce quality first down to 0.6
     if (quality > 0.6) {
       quality = Math.max(0.6, quality - 0.1);
       continue;
     }
 
-    // else reduce scale 90% step, but avoid going below MIN_DIMENSION if possible
     const newScale = scale * 0.9;
-    const newW = Math.round(origW * newScale);
-    const newH = Math.round(origH * newScale);
+    const newW = Math.round(origW * newScale), newH = Math.round(origH * newScale);
     if (Math.min(newW, newH) < MIN_DIMENSION) {
-      // if quality still > 0.45, drop it; else accept and warn
       if (quality > 0.45) {
         quality = Math.max(0.45, quality - 0.1);
         continue;
@@ -228,53 +218,99 @@ async function preprocessForOCR(file) {
   } else {
     addLogEntry(`Processed image ready: ${Math.round(blob.size/1024)}KB`, 'success');
   }
-
   return blob;
 }
 
-// ---------- OCR wrapper (sends currentFile) ----------
-async function performOCR() {
+// ---------- OCR: OCR.Space (preferred) + Tesseract fallback ----------
+async function performOCR_withOCRSpace(blob) {
   addLogEntry('Uploading image to OCR.Space API...', 'step');
+  const form = new FormData();
+  form.append('apikey', API_KEY);
+  form.append('language', 'eng');
+  form.append('isOverlayRequired', 'false');
+  form.append('scale', 'true');
+  form.append('OCREngine', '2');
+  form.append('file', blob);
+
+  const resp = await fetch('https://api.ocr.space/parse/image', { method: 'POST', body: form });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+  const data = await resp.json();
+  if (data.IsErroredOnProcessing) {
+    const errMsg = data.ErrorMessage || data.ErrorDetails || 'Unknown OCR.Space error';
+    throw new Error(Array.isArray(errMsg) ? errMsg.join('; ') : errMsg);
+  }
+  const results = data.ParsedResults || [];
+  const extractedText = results.map(r => r.ParsedText?.trim()).filter(Boolean).join('\n\n');
+  addLogEntry(`OCR.Space returned ${extractedText ? extractedText.length : 0} chars`, 'info');
+  return extractedText || null;
+}
+
+function loadTesseractScript() {
+  // load Tesseract.js CDN dynamically if not present
+  return new Promise((resolve, reject) => {
+    if (window.Tesseract) {
+      usingTesseract = true;
+      return resolve();
+    }
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/tesseract.js@4.1.2/dist/tesseract.min.js';
+    script.async = true;
+    script.onload = () => {
+      usingTesseract = true;
+      addLogEntry('Tesseract.js loaded as OCR fallback', 'info');
+      resolve();
+    };
+    script.onerror = () => reject(new Error('Failed to load Tesseract.js'));
+    document.head.appendChild(script);
+  });
+}
+
+async function performOCR_withTesseract(blob) {
+  addLogEntry('Running Tesseract.js OCR locally (fallback)...', 'step');
+  // Wait for Tesseract lib loaded
+  if (!window.Tesseract) await loadTesseractScript();
+  // Tesseract expects either URL or File/Blob. We'll use createObjectURL.
+  const url = URL.createObjectURL(blob);
   try {
-    const formData = new FormData();
-    formData.append('apikey', API_KEY);
-    formData.append('language', 'eng');
-    formData.append('isOverlayRequired', 'false');
-    formData.append('scale', 'true');
-    formData.append('OCREngine', '2');
-    formData.append('file', currentFile);
-
-    const response = await fetch('https://api.ocr.space/parse/image', { method: 'POST', body: formData });
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    const data = await response.json();
-    if (data.IsErroredOnProcessing) {
-      const errorMsg = data.ErrorMessage || data.ErrorDetails || 'Unknown error';
-      throw new Error(Array.isArray(errorMsg) ? errorMsg.join('; ') : errorMsg);
-    }
-
-    const results = data.ParsedResults || [];
-    const extractedText = results.map(r => r.ParsedText?.trim()).filter(Boolean).join('\n\n');
-    if (extractedText) {
-      addLogEntry(`OCR completed. Extracted ${extractedText.length} characters`, 'success');
-      return extractedText;
-    } else {
-      addLogEntry('No text extracted from OCR', 'info');
-      return null;
-    }
+    const worker = Tesseract.createWorker({
+      logger: m => {
+        if (m.status) addLogEntry(`Tesseract: ${m.status} ${(m.progress || 0).toFixed(2)}`, 'info');
+      }
+    });
+    await worker.load();
+    await worker.loadLanguage('eng');
+    await worker.initialize('eng');
+    const { data } = await worker.recognize(url);
+    await worker.terminate();
+    URL.revokeObjectURL(url);
+    const text = data?.text?.trim() || null;
+    addLogEntry(`Tesseract extracted ${text ? text.length : 0} chars`, 'info');
+    return text;
   } catch (err) {
-    addLogEntry(`OCR error: ${err.message}`, 'error');
+    URL.revokeObjectURL(url);
     throw err;
+  }
+}
+
+async function performOCR(blob) {
+  // Decide: use OCR.Space if API_KEY provided, else use Tesseract
+  if (API_KEY && API_KEY.trim()) {
+    try {
+      return await performOCR_withOCRSpace(blob);
+    } catch (err) {
+      addLogEntry(`OCR.Space failed: ${err.message} — falling back to Tesseract`, 'warning');
+      await loadTesseractScript();
+      return await performOCR_withTesseract(blob);
+    }
+  } else {
+    if (!window.Tesseract) await loadTesseractScript();
+    return await performOCR_withTesseract(blob);
   }
 }
 
 // ---------- OCR confusion tolerant helpers ----------
 const CONFUSION_MAP = { 'O': '0', '0': 'O', 'I': '1', '1': 'I', 'Z': '2', '2': 'Z', 'S': '5', '5': 'S', 'B':'8', '8':'B' };
 
-/**
- * generateVariants(token, limit)
- * - produces a limited set of token variants by swapping chars using CONFUSION_MAP
- * - caps variants to avoid explosion
- */
 function generateVariants(token, limit = 12) {
   const indices = [];
   const chars = token.split('');
@@ -284,7 +320,7 @@ function generateVariants(token, limit = 12) {
   if (indices.length === 0) return [token];
 
   const variants = new Set();
-  const maxComb = Math.min(1 << indices.length, 1 << 10); // cap combinations
+  const maxComb = Math.min(1 << indices.length, 1 << 10);
   for (let mask = 0; mask < maxComb && variants.size < limit; mask++) {
     const arr = chars.slice();
     for (let b = 0; b < indices.length; b++) {
@@ -297,28 +333,22 @@ function generateVariants(token, limit = 12) {
   }
   return Array.from(variants);
 }
-
-// ---------- Plate reconstruction (uses variants for robust matching) ----------
 function tryPlateMatchWithVariants(candidate) {
-  // quick test if candidate directly matches strict pattern
   if (KA_VEHICLE_PATTERN.test(candidate)) return true;
-
-  // also test some normalized variants (e.g., O->0 etc.)
   const variants = generateVariants(candidate, 20);
   return variants.some(v => KA_VEHICLE_PATTERN.test(v));
 }
 
+// ---------- Plate reconstruction ----------
 function findKAVehicleInTokens(tokens) {
-  // Try direct tokens and reconstructed candidates.
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
 
-    // direct token or its variants
+    // direct token or variant
     if (tryPlateMatchWithVariants(t)) {
-      addLogEntry(`Direct plate token/variant match: ${t}`, 'info');
-      // prefer normalized variant that matches strict pattern
       const variants = generateVariants(t, 20);
       const good = variants.find(v => KA_VEHICLE_PATTERN.test(v)) || t;
+      addLogEntry(`Direct token/variant match: ${good}`, 'info');
       return { plate: good, indices: [i] };
     }
 
@@ -327,21 +357,14 @@ function findKAVehicleInTokens(tokens) {
       const district = t;
       for (let j = i + 1; j <= Math.min(i + 4, tokens.length - 1); j++) {
         const tj = tokens[j];
-        // letters+4digits
         if (/^[A-Z]{1,2}\d{4}$/.test(tj) || tryPlateMatchWithVariants(district + tj)) {
           const candidate = district + tj;
-          addLogEntry(`Trying candidate (district + series+num): ${candidate}`, 'info');
-          // check variants
-          const variants = generateVariants(candidate, 30);
-          const ok = variants.find(v => KA_VEHICLE_PATTERN.test(v));
+          const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
           if (ok) return { plate: ok, indices: [i, j] };
         }
-        // letters only + next token 4 digits
         if (/^[A-Z]{1,2}$/.test(tj) && j + 1 <= Math.min(i + 4, tokens.length - 1) && /^\d{4}$/.test(tokens[j + 1])) {
           const candidate = district + tj + tokens[j + 1];
-          addLogEntry(`Trying candidate (district + letters + digits): ${candidate}`, 'info');
-          const variants = generateVariants(candidate, 30);
-          const ok = variants.find(v => KA_VEHICLE_PATTERN.test(v));
+          const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
           if (ok) return { plate: ok, indices: [i, j, j + 1] };
         }
       }
@@ -355,13 +378,11 @@ function findKAVehicleInTokens(tokens) {
           const tj = tokens[j];
           if (/^[A-Z]{1,2}\d{4}$/.test(tj) || tryPlateMatchWithVariants(district + tj)) {
             const candidate = district + tj;
-            addLogEntry(`Trying candidate (KA + digits + series+num): ${candidate}`, 'info');
             const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
             if (ok) return { plate: ok, indices: [i, i + 1, j] };
           }
           if (/^[A-Z]{1,2}$/.test(tj) && j + 1 <= Math.min(i + 5, tokens.length - 1) && /^\d{4}$/.test(tokens[j + 1])) {
             const candidate = district + tj + tokens[j + 1];
-            addLogEntry(`Trying candidate (KA + digits + letters + digits): ${candidate}`, 'info');
             const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
             if (ok) return { plate: ok, indices: [i, i + 1, j, j + 1] };
           }
@@ -373,76 +394,59 @@ function findKAVehicleInTokens(tokens) {
     if (/^KA\d{2}[A-Z]{1,2}$/.test(t)) {
       if (i + 1 < tokens.length && /^\d{4}$/.test(tokens[i + 1])) {
         const candidate = t + tokens[i + 1];
-        addLogEntry(`Trying candidate (KA+letters + digits): ${candidate}`, 'info');
         const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
         if (ok) return { plate: ok, indices: [i, i + 1] };
       }
     }
 
-    // token = "AK4247" and previous tokens contain KA district
+    // token = series+number and previous tokens contain KA district
     if (/^[A-Z]{1,2}\d{4}$/.test(t)) {
       if (i - 1 >= 0 && /^KA\d{2}$/.test(tokens[i - 1])) {
         const candidate = tokens[i - 1] + t;
-        addLogEntry(`Trying candidate (prev KA## + ${t}): ${candidate}`, 'info');
         const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
         if (ok) return { plate: ok, indices: [i - 1, i] };
       }
       if (i - 2 >= 0 && /^KA$/.test(tokens[i - 2]) && /^\d{2}$/.test(tokens[i - 1])) {
         const candidate = tokens[i - 2] + tokens[i - 1] + t;
-        addLogEntry(`Trying candidate (KA + digits + ${t}): ${candidate}`, 'info');
         const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
         if (ok) return { plate: ok, indices: [i - 2, i - 1, i] };
       }
     }
 
-    // token = "4247" with letters and KA before it
+    // token = 4 digits and previous tokens are letters and KA district
     if (/^\d{4}$/.test(t)) {
       if (i - 1 >= 0 && /^[A-Z]{1,2}$/.test(tokens[i - 1]) && i - 2 >= 0 && /^KA\d{2}$/.test(tokens[i - 2])) {
         const candidate = tokens[i - 2] + tokens[i - 1] + t;
-        addLogEntry(`Trying candidate (KA## + letters + digits): ${candidate}`, 'info');
         const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
         if (ok) return { plate: ok, indices: [i - 2, i - 1, i] };
       }
       if (i - 3 >= 0 && /^KA$/.test(tokens[i - 3]) && /^\d{2}$/.test(tokens[i - 2]) && /^[A-Z]{1,2}$/.test(tokens[i - 1])) {
         const candidate = tokens[i - 3] + tokens[i - 2] + tokens[i - 1] + t;
-        addLogEntry(`Trying candidate (KA + digits + letters + digits): ${candidate}`, 'info');
         const ok = generateVariants(candidate, 30).find(v => KA_VEHICLE_PATTERN.test(v));
         if (ok) return { plate: ok, indices: [i - 3, i - 2, i - 1, i] };
       }
     }
   }
-
   return null;
 }
 
-// ---------- Text processing (including confusion corrections) ----------
+// ---------- Text processing ----------
 function processText(rawText) {
   addLogEntry('Starting text processing...', 'step');
 
-  // Normalize newlines to spaces to keep token boundaries
-  addLogEntry('Step 1: Normalizing newlines', 'step');
   const step1 = rawText.replace(/\r/g, ' ').replace(/\n/g, ' ');
-  addLogEntry(`Result: "${step1.substring(0, 80)}${step1.length > 80 ? '...' : ''}"`, 'info');
+  addLogEntry('Normalized newlines', 'info');
 
-  // Replace non-alphanumeric with spaces to preserve tokens
-  addLogEntry('Step 2: Replacing non-alphanumeric with spaces', 'step');
   const step2 = step1.replace(/[^A-Za-z0-9]/g, ' ');
-  addLogEntry(`Result: "${step2.substring(0, 80)}${step2.length > 80 ? '...' : ''}"`, 'info');
+  addLogEntry('Replaced non-alphanumeric chars with spaces', 'info');
 
-  // Uppercase
-  addLogEntry('Step 3: Uppercasing', 'step');
   const step3 = step2.toUpperCase();
-  addLogEntry(`Result: "${step3.substring(0, 80)}${step3.length > 80 ? '...' : ''}"`, 'info');
+  addLogEntry('Converted to uppercase', 'info');
 
-  // Tokenize
-  addLogEntry('Step 4: Tokenizing', 'step');
   const tokens = step3.split(/\s+/).filter(Boolean);
-  addLogEntry(`Tokens: ${tokens.join(', ')}`, 'info');
+  addLogEntry(`Tokens: ${tokens.slice(0,50).join(', ')}${tokens.length>50 ? '...' : ''}`, 'info');
 
-  // Attempt to find plate (reconstruction + variants)
-  addLogEntry('Step 5: Looking for Karnataka vehicle number (reconstructing + variants)...', 'step');
   const found = findKAVehicleInTokens(tokens);
-
   if (found) {
     addLogEntry(`✓ Found Karnataka vehicle number: ${found.plate}`, 'success');
     return { processed: found.plate, found: true, allMatches: [found.plate], fullProcessed: step3, type: 'vehicle' };
@@ -452,54 +456,39 @@ function processText(rawText) {
   return { processed: 'No KA vehicle number found', found: false, allMatches: [], fullProcessed: step3, type: 'none' };
 }
 
-// ---------- Auto OCR run + UI update flow ----------
+// ---------- Orchestrator: run OCR -> process -> show ----------
 async function runOcrAndProcessAndShow() {
-  // currentFile must be set (Blob/File)
-  if (!currentFile) {
-    addLogEntry('No file for OCR', 'warning');
-    return;
-  }
+  if (!currentFile) { addLogEntry('No file to OCR', 'warning'); setStatus('Please select an image first', true); return; }
 
   try {
     setStatus('Uploading to OCR...');
     output.textContent = 'Uploading to OCR...';
-    const ocrText = await performOCR(); // may throw
+    const ocrText = await performOCR(currentFile);
     if (!ocrText) {
       setStatus('No text detected', true);
       output.textContent = 'No text found in the image.';
       processedOutput.textContent = 'No text to process';
       return;
     }
-
-    // show OCR raw output
     output.textContent = ocrText;
     addLogEntry('Raw OCR text displayed', 'info');
 
-    // process extracted text
     const result = processText(ocrText);
     processedOutput.textContent = result.processed;
     processedOutput.className = `output processed-output ${result.found ? 'found' : 'not-found'}`;
     copyBtn.style.display = result.found ? 'flex' : 'none';
-
-    if (result.found) {
-      setStatus(`✓ Found Karnataka vehicle number: ${result.processed}`);
-    } else {
-      setStatus('⚠ No Karnataka vehicle number pattern found');
-    }
+    setStatus(result.found ? `✓ Found Karnataka vehicle number: ${result.processed}` : '⚠ No Karnataka vehicle number pattern found');
   } catch (err) {
+    addLogEntry(`OCR/process error: ${err.message}`, 'error');
     setStatus(`✗ ${err.message}`, true);
     output.textContent = `Error: ${err.message}`;
     processedOutput.textContent = 'Processing failed';
-    addLogEntry(`Error during OCR/process: ${err.message}`, 'error');
   }
 }
 
-// ---------- File handling pipeline (unified) ----------
+// ---------- File pipeline (unified) ----------
 async function handleFileInput(file) {
-  if (!file) {
-    addLogEntry('No file provided', 'warning');
-    return;
-  }
+  if (!file) { addLogEntry('No file provided', 'warning'); return; }
   addLogEntry(`File chosen: ${file.name} (${Math.round(file.size/1024)}KB)`, 'info');
 
   if (!isValidImageFile(file)) {
@@ -508,22 +497,20 @@ async function handleFileInput(file) {
     return;
   }
 
-  // keep a copy of original for "Original/Processed" preview toggle
   originalBlob = file instanceof Blob ? file : new Blob([file], { type: file.type });
 
-  // If file is >1MB, preprocess until under limit
+  // If too large => preprocess until under limit
   if (!isFileSizeValid(file)) {
-    setStatus('Image >1MB — preprocessing for OCR...');
+    setStatus('Image >1MB — preprocessing...');
     try {
       const processedBlob = await preprocessForOCR(file);
       if (processedBlob) {
-        // set processed blob as currentFile and show preview
         currentFile = new File([processedBlob], `processed_${file.name.replace(/\s+/g,'_')}.jpg`, { type: 'image/jpeg' });
         setPreviewFromBlob(currentFile);
         addLogEntry(`Using processed image for OCR (${Math.round(currentFile.size/1024)}KB)`, 'success');
         setStatus('Processed image ready (preview shows processed).');
       } else {
-        addLogEntry('Preprocess returned null — using original (fallback)', 'warning');
+        addLogEntry('Preprocess returned null — using original', 'warning');
         currentFile = file;
         setPreviewFromBlob(originalBlob);
       }
@@ -534,7 +521,7 @@ async function handleFileInput(file) {
       setStatus('Preprocess failed — using original image', true);
     }
   } else {
-    // file <=1MB: apply light preprocessing if >200KB (balanced), else use original
+    // file <=1MB: apply light preprocess if >200KB
     if (file.size > 200 * 1024) {
       addLogEntry('Applying light preprocessing for OCR', 'info');
       try {
@@ -561,40 +548,29 @@ async function handleFileInput(file) {
     setStatus('Image ready. Preview shows processed (if applied).');
   }
 
-  // ensure preview toggle exists and shows processed by default
   ensurePreviewToggle();
-
-  // auto-run OCR if configured
-  if (autoRunOCR) {
-    // slight delay so preview updates first
-    setTimeout(() => runOcrAndProcessAndShow(), 300);
-  }
+  // Auto-run OCR (short delay allows preview to render)
+  setTimeout(() => runOcrAndProcessAndShow(), 300);
 }
 
-// ---------- Preview toggle (Original <-> Processed) ----------
-let previewToggleBtn = null;
+// ---------- Preview toggle ----------
 function ensurePreviewToggle() {
-  if (previewToggleBtn) return; // already present
-
+  if (previewToggleBtn) return;
   previewToggleBtn = document.createElement('button');
   previewToggleBtn.id = 'previewToggleBtn';
   previewToggleBtn.textContent = 'Show Original';
   previewToggleBtn.title = 'Toggle Original / Processed preview';
   previewToggleBtn.style.marginTop = '8px';
   previewToggleBtn.className = 'btn btn-secondary';
-
-  // Insert toggle just after preview container
   preview.parentNode.insertBefore(previewToggleBtn, preview.nextSibling);
 
-  let showingProcessed = true; // default after preprocess we show processed
+  let showingProcessed = true;
   previewToggleBtn.addEventListener('click', () => {
     if (showingProcessed) {
-      // show original if available
       if (originalBlob) setPreviewFromBlob(originalBlob);
       previewToggleBtn.textContent = 'Show Processed';
       showingProcessed = false;
     } else {
-      // show processed (currentFile)
       if (currentFile) setPreviewFromBlob(currentFile);
       previewToggleBtn.textContent = 'Show Original';
       showingProcessed = true;
@@ -602,7 +578,7 @@ function ensurePreviewToggle() {
   });
 }
 
-// ---------- Wiring up existing UI handlers (keeps original behavior) ----------
+// ---------- File input & UI event wiring ----------
 function openCamera() {
   const tempInput = document.createElement('input');
   tempInput.type = 'file';
@@ -614,13 +590,11 @@ function openCamera() {
   tempInput.click();
   addLogEntry('Opening camera...', 'info');
 }
-
 function openGallery() {
   if (fileInput.hasAttribute('capture')) fileInput.removeAttribute('capture');
   fileInput.click();
   addLogEntry('Opening gallery/storage...', 'info');
 }
-
 function setupEventListeners() {
   if (fileInput.hasAttribute('capture')) fileInput.removeAttribute('capture');
 
@@ -632,10 +606,7 @@ function setupEventListeners() {
   if (cameraBtn) cameraBtn.addEventListener('click', openCamera);
   if (galleryBtn) galleryBtn.addEventListener('click', openGallery);
 
-  dropzone.addEventListener('click', e => {
-    e.preventDefault(); e.stopPropagation();
-    fileInput.click();
-  });
+  dropzone.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); fileInput.click(); });
 
   ['dragenter','dragover'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('dragover'); }));
   ['dragleave','drop'].forEach(ev => dropzone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('dragover'); }));
@@ -644,7 +615,6 @@ function setupEventListeners() {
   clearBtn.addEventListener('click', clearAll);
   extractBtn.addEventListener('click', async () => {
     if (!currentFile) { setStatus('Please select an image first', true); return; }
-    // manual trigger: run OCR/process
     await runOcrAndProcessAndShow();
   });
 
@@ -658,7 +628,7 @@ function setupEventListeners() {
   dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
 }
 
-// ---------- Remaining helpers (copy, clear) ----------
+// ---------- Misc helpers ----------
 async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
@@ -670,7 +640,6 @@ async function copyToClipboard(text) {
     addLogEntry(`Copy error: ${err}`, 'error');
   }
 }
-
 function clearAll() {
   currentFile = null;
   originalBlob = null;
@@ -683,8 +652,7 @@ function clearAll() {
   setStatus('');
   copyBtn.style.display = 'none';
   revokePreview();
-  if (previewToggleBtn) previewToggleBtn.remove();
-  previewToggleBtn = null;
+  if (previewToggleBtn) { previewToggleBtn.remove(); previewToggleBtn = null; }
 }
 
 // ---------- Init ----------
