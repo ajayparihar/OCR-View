@@ -282,7 +282,7 @@ function openCamera() {
   const tempInput = document.createElement('input');
   tempInput.type = 'file';
   tempInput.accept = 'image/*';
-  tempInput.capture = 'environment'; // Use the back camera
+  tempInput.setAttribute('capture', 'environment'); // Use the back camera
   
   // Handle the file selection
   tempInput.addEventListener('change', (e) => {
@@ -293,16 +293,30 @@ function openCamera() {
   
   // Trigger the file selection dialog
   tempInput.click();
+  
+  // Log for debugging
+  addLogEntry('Opening camera...', 'info');
 }
 
 function openGallery() {
-  // Use the existing file input but without capture attribute
-  fileInput.capture = ''; // Remove any capture attribute
+  // Use the existing file input but ensure no capture attribute
+  // This ensures it opens the gallery/storage instead of camera
+  if (fileInput.hasAttribute('capture')) {
+    fileInput.removeAttribute('capture');
+  }
   fileInput.click();
+  
+  // Log for debugging
+  addLogEntry('Opening gallery/storage...', 'info');
 }
 
 // Event listeners
 function setupEventListeners() {
+  // Ensure file input doesn't have capture attribute by default
+  if (fileInput.hasAttribute('capture')) {
+    fileInput.removeAttribute('capture');
+  }
+  
   // File input change handler
   fileInput.addEventListener('change', e => {
     const file = e.target.files && e.target.files[0];
@@ -318,10 +332,12 @@ function setupEventListeners() {
     galleryBtn.addEventListener('click', openGallery);
   }
 
-  // Prevent dropzone from interfering with file input
+  // Make dropzone click open gallery instead of camera
   dropzone.addEventListener('click', e => {
     e.preventDefault();
     e.stopPropagation();
+    // Open gallery when dropzone is clicked
+    fileInput.click();
   });
 
   // Drag and drop handlers
