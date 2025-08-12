@@ -1,5 +1,7 @@
 # Image to Text OCR Web Application
 
+[Live Application](https://ajayparihar.github.io/OCR-View/)
+
 A modern, responsive web application that extracts text from images using the OCR.Space API. Features a beautiful glassomorphic UI design with drag-and-drop functionality and mobile camera support.
 
 ![OCR Web App](https://img.shields.io/badge/OCR-Web%20Application-blue) ![HTML5](https://img.shields.io/badge/html5-%23E34F26.svg?style=flat&logo=html5&logoColor=white) ![CSS3](https://img.shields.io/badge/css3-%231572B6.svg?style=flat&logo=css3&logoColor=white) ![JavaScript](https://img.shields.io/badge/javascript-%23323330.svg?style=flat&logo=javascript&logoColor=%23F7DF1E)
@@ -32,7 +34,7 @@ A modern, responsive web application that extracts text from images using the OC
 ## 🚀 Demo
 
 ### Live Demo
-[View Live Application](https://your-demo-url.com) *(Replace with your hosted URL)*
+[View Live Application](https://ajayparihar.github.io/OCR-View/)
 
 
 ## 📦 Installation
