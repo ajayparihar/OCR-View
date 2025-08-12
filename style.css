@@ -544,7 +544,7 @@ body {
 }
 
 .log-toggle.expanded {
-  transform: rotate(0deg);
+  transform: rotate(90deg);
 }
 
 .processing-log {
