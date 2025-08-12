@@ -276,6 +276,31 @@ async function extractText() {
   }
 }
 
+// Mobile camera and gallery functions
+function openCamera() {
+  // Create a temporary file input with camera capture
+  const tempInput = document.createElement('input');
+  tempInput.type = 'file';
+  tempInput.accept = 'image/*';
+  tempInput.capture = 'environment'; // Use the back camera
+  
+  // Handle the file selection
+  tempInput.addEventListener('change', (e) => {
+    if (e.target.files && e.target.files[0]) {
+      handleFile(e.target.files[0]);
+    }
+  });
+  
+  // Trigger the file selection dialog
+  tempInput.click();
+}
+
+function openGallery() {
+  // Use the existing file input but without capture attribute
+  fileInput.capture = ''; // Remove any capture attribute
+  fileInput.click();
+}
+
 // Event listeners
 function setupEventListeners() {
   // File input change handler
@@ -283,6 +308,15 @@ function setupEventListeners() {
     const file = e.target.files && e.target.files[0];
     handleFile(file);
   });
+  
+  // Mobile camera and gallery buttons
+  if (cameraBtn) {
+    cameraBtn.addEventListener('click', openCamera);
+  }
+  
+  if (galleryBtn) {
+    galleryBtn.addEventListener('click', openGallery);
+  }
 
   // Prevent dropzone from interfering with file input
   dropzone.addEventListener('click', e => {

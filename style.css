@@ -188,6 +188,51 @@ body {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.mobile-options {
+  display: none; /* Hidden by default, shown on mobile */
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.mobile-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mobile-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.mobile-btn-icon {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+
+.mobile-btn-text {
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* Show mobile options on small screens */
+@media (max-width: 768px) {
+  .mobile-options {
+    display: grid;
+  }
+  
+  .dropzone-subtext {
+    display: none;
+  }
+}
+
 .preview {
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--card-border);
